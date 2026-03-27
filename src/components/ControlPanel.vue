@@ -2,122 +2,143 @@
 import { ref, computed } from 'vue';
 
 const props = defineProps({
-  trafficLights: Object,
-  publishVehiclePosition: Function,
-  changeTrafficLight: Function,
-  createDelivery: Function,
-  fetchMaterialReport: Function,
-  fetchCongestionReport: Function,
-  fetchState: Function,
-  reports: Object,
+  trafficLights:          { type: Object,   default: () => ({}) },
+  reports:                { type: Object,   default: () => ({}) },
+  publishVehiclePosition: { type: Function, required: true },
+  changeTrafficLight:     { type: Function, required: true },
+  createDelivery:         { type: Function, required: true },
+  fetchMaterialReport:    { type: Function, required: true },
+  fetchCongestionReport:  { type: Function, required: true },
+  fetchState:             { type: Function, required: true },
 });
 
-// ── Tabs ───────────────────────────────────────────────────────
+// ── Tabs ──────────────────────────────────────────────────────────────────────
 const activeTab = ref('vehicles');
 const tabs = [
-  { id: 'vehicles', label: 'Vehicles', icon: '🚜' },
-  { id: 'lights',   label: 'Traffic Lights', icon: '🚦' },
-  { id: 'delivery', label: 'Deliveries', icon: '📦' },
-  { id: 'reports',  label: 'Reports', icon: '📊' },
+  { id: 'vehicles',  label: 'Vehicles',  icon: '🚜' },
+  { id: 'lights',    label: 'Lights',    icon: '🚦' },
+  { id: 'delivery',  label: 'Delivery',  icon: '📦' },
+  { id: 'reports',   label: 'Reports',   icon: '📊' },
 ];
 
-// ── Status feedback ───────────────────────────────────────────
-const loading = ref(false);
-const feedback = ref(null); // { type: 'ok'|'err', msg }
+// ── Feedback ──────────────────────────────────────────────────────────────────
+const loading  = ref(false);
+const feedback = ref(null); // { type: 'ok' | 'err', msg }
+
 function setFeedback(type, msg) {
   feedback.value = { type, msg };
-  setTimeout(() => (feedback.value = null), 4000);
+  setTimeout(() => { feedback.value = null; }, 4000);
 }
+
 async function run(fn) {
   loading.value = true;
+  feedback.value = null;
   try {
     const res = await fn();
-    setFeedback('ok', 'Done ✓');
+    setFeedback('ok', 'Success ✓');
     return res;
   } catch (e) {
-    setFeedback('err', e.message || 'Error');
+    setFeedback('err', e.message || 'Request failed');
+    throw e;
   } finally {
     loading.value = false;
   }
 }
 
-// ── Vehicle Position ──────────────────────────────────────────
-const vForm = ref({ vehicle_id: 'TRK-01', zone_id: 'Z1', x: 30, y: 35, speed: 45, destination: 'PIT' });
-const zones = ['Z1', 'Z2', 'Z3', 'Z4', 'Z5', 'Z6'];
-const destinations = ['PIT', 'DEPOT', 'CRUSHER', 'DUMP'];
+// ── Vehicle form ──────────────────────────────────────────────────────────────
+const vForm = ref({
+  vehicle_id:  'TRUCK-01',
+  zone_id:     'Z1',
+  x:           0,
+  y:           0,
+  speed:       2.0,
+  destination: 'CRUSHER-A',
+});
+const zones        = ['Z1', 'Z2', 'Z3'];
+const destinations = ['CRUSHER-A', 'DEPOT', 'DUMP-1', 'PIT-1'];
 
 async function submitVehicle() {
-  await run(() => props.publishVehiclePosition({ ...vForm.value, x: Number(vForm.value.x), y: Number(vForm.value.y), speed: Number(vForm.value.speed) }));
+  await run(() => props.publishVehiclePosition({ ...vForm.value }));
 }
 
-// ── Traffic Lights ────────────────────────────────────────────
-const lightList = computed(() => Object.keys(props.trafficLights || { 'TL-01': {}, 'TL-02': {} }));
+// ── Traffic lights ────────────────────────────────────────────────────────────
 const selectedLight = ref('TL-01');
-const states = ['GREEN', 'YELLOW', 'RED'];
+const lightIds = computed(() => {
+  const ids = Object.keys(props.trafficLights);
+  return ids.length ? ids : ['TL-01', 'TL-02'];
+});
+const lightStates = ['GREEN', 'YELLOW', 'RED'];
 
-async function setLight(newState) {
-  await run(() => props.changeTrafficLight(selectedLight.value, newState));
+async function setLight(state) {
+  await run(() => props.changeTrafficLight(selectedLight.value, state));
 }
 
-// ── Delivery ──────────────────────────────────────────────────
-const dForm = ref({ vehicle_id: 'TRK-01', origin: 'PIT', destination: 'DEPOT', material_type: 'ore', quantity_tons: 20 });
-const materials = ['ore', 'coal', 'limestone', 'overburden', 'gravel'];
+// ── Delivery form ──────────────────────────────────────────────────────────────
+const dForm = ref({
+  vehicle_id:    'TRUCK-01',
+  origin:        'PIT-1',
+  destination:   'CRUSHER-A',
+  material_type: 'copper_ore',
+  quantity_tons: 20,
+});
+const materials = ['copper_ore', 'waste_rock', 'coal', 'limestone', 'gravel'];
+const places    = ['PIT-1', 'PIT-2', 'PIT-3', 'CRUSHER-A', 'DEPOT', 'DUMP-1'];
 
 async function submitDelivery() {
-  await run(() => props.createDelivery({ ...dForm.value, quantity_tons: Number(dForm.value.quantity_tons) }));
+  await run(() => props.createDelivery({ ...dForm.value }));
 }
 
-// ── Reports ───────────────────────────────────────────────────
+// ── Reports ───────────────────────────────────────────────────────────────────
 const period = ref('day');
 
-async function loadMaterial() {
-  await run(() => props.fetchMaterialReport(period.value));
-}
-async function loadCongestion() {
-  await run(() => props.fetchCongestionReport());
-}
-async function refreshAll() {
-  await run(() => props.fetchState());
-}
+async function loadMaterial()   { await run(() => props.fetchMaterialReport(period.value)); }
+async function loadCongestion() { await run(() => props.fetchCongestionReport()); }
+async function refreshState()   { await run(() => props.fetchState()); }
+
+function stateLower(s) { return (s || '').toLowerCase(); }
 </script>
 
 <template>
-  <div class="control-panel glass-panel">
-    <div class="panel-header">
-      <h2>Control Panel</h2>
-      <button class="refresh-btn" @click="refreshAll" :disabled="loading" title="Refresh state">
+  <aside class="cp glass-panel">
+
+    <!-- Header -->
+    <div class="cp-header">
+      <h2>Control</h2>
+      <button class="refresh-btn" :disabled="loading" @click="refreshState" title="Refresh state">
         <span :class="{ spinning: loading }">↻</span>
       </button>
     </div>
 
-    <!-- Feedback toast -->
-    <div v-if="feedback" class="feedback" :class="feedback.type">
-      {{ feedback.msg }}
-    </div>
+    <!-- Feedback -->
+    <transition name="fade">
+      <div v-if="feedback" class="feedback" :class="feedback.type">{{ feedback.msg }}</div>
+    </transition>
 
     <!-- Tabs -->
-    <div class="tabs">
+    <nav class="tabs" role="tablist">
       <button
         v-for="tab in tabs"
         :key="tab.id"
-        class="tab-btn"
+        class="tab"
         :class="{ active: activeTab === tab.id }"
+        role="tab"
         @click="activeTab = tab.id"
       >
-        <span>{{ tab.icon }}</span> {{ tab.label }}
+        {{ tab.icon }}<span class="tab-label">{{ tab.label }}</span>
       </button>
-    </div>
+    </nav>
 
-    <!-- ─── Panel Content ─── -->
-    <div class="tab-content">
+    <!-- Content -->
+    <div class="cp-body">
 
-      <!-- VEHICLES -->
-      <div v-if="activeTab === 'vehicles'" class="form-section">
-        <p class="section-desc">Publish a vehicle position update to the gateway. The vehicle will appear on the map immediately.</p>
+      <!-- ── VEHICLES ─────────────────────────────────────────── -->
+      <section v-show="activeTab === 'vehicles'" class="section">
+        <p class="hint">Publish a vehicle position update. It will appear immediately on the map.</p>
+
         <div class="form-grid">
           <label class="field">
             <span>Vehicle ID</span>
-            <input v-model="vForm.vehicle_id" placeholder="TRK-01" />
+            <input v-model="vForm.vehicle_id" placeholder="TRUCK-01" />
           </label>
           <label class="field">
             <span>Zone</span>
@@ -126,16 +147,16 @@ async function refreshAll() {
             </select>
           </label>
           <label class="field">
-            <span>X (0–100)</span>
-            <input type="number" v-model="vForm.x" min="0" max="100" />
+            <span>X (world)</span>
+            <input type="number" v-model.number="vForm.x" step="0.5" min="0" max="25" />
           </label>
           <label class="field">
-            <span>Y (0–100)</span>
-            <input type="number" v-model="vForm.y" min="0" max="100" />
+            <span>Y (world)</span>
+            <input type="number" v-model.number="vForm.y" step="0.5" min="0" max="6" />
           </label>
           <label class="field">
-            <span>Speed (km/h)</span>
-            <input type="number" v-model="vForm.speed" min="0" max="120" />
+            <span>Speed km/h</span>
+            <input type="number" v-model.number="vForm.speed" step="0.1" min="0" max="5" />
           </label>
           <label class="field">
             <span>Destination</span>
@@ -144,54 +165,53 @@ async function refreshAll() {
             </select>
           </label>
         </div>
-        <button class="action-btn primary" @click="submitVehicle" :disabled="loading">
+        <button class="btn primary" :disabled="loading" @click="submitVehicle">
           📡 Publish Position
         </button>
-      </div>
+      </section>
 
-      <!-- TRAFFIC LIGHTS -->
-      <div v-if="activeTab === 'lights'" class="form-section">
-        <p class="section-desc">Select a traffic light and change its state. Affects all microservices and triggers an event.</p>
-        <label class="field wide">
+      <!-- ── LIGHTS ───────────────────────────────────────────── -->
+      <section v-show="activeTab === 'lights'" class="section">
+        <p class="hint">Select a traffic light and set its state.</p>
+
+        <label class="field full">
           <span>Traffic Light</span>
           <select v-model="selectedLight">
-            <option v-for="id in lightList" :key="id">{{ id }}</option>
+            <option v-for="id in lightIds" :key="id">{{ id }}</option>
           </select>
         </label>
-        <div class="light-buttons">
+
+        <div class="light-row">
           <button
-            v-for="s in states"
+            v-for="s in lightStates"
             :key="s"
             class="light-btn"
             :class="s.toLowerCase()"
-            @click="setLight(s)"
             :disabled="loading"
+            @click="setLight(s)"
           >
-            <span class="light-dot"></span>
-            {{ s }}
+            <span class="bulb"></span>{{ s }}
           </button>
         </div>
-        <!-- Current states display -->
-        <div class="current-lights">
-          <div
-            v-for="(light, id) in trafficLights"
-            :key="id"
-            class="light-status-row"
-          >
-            <span>{{ id }}</span>
-            <span class="zone-badge">{{ light.zone_id }}</span>
-            <span class="state-chip" :class="(light.state || '').toLowerCase()">{{ light.state || '—' }}</span>
+
+        <!-- Current state summary -->
+        <div class="lights-table" v-if="Object.keys(trafficLights).length">
+          <div v-for="(lt, id) in trafficLights" :key="id" class="lt-row">
+            <span class="lt-id">{{ id }}</span>
+            <span class="lt-zone">{{ lt.zone_id }}</span>
+            <span class="lt-chip" :class="stateLower(lt.state)">{{ lt.state || '—' }}</span>
           </div>
         </div>
-      </div>
+      </section>
 
-      <!-- DELIVERY -->
-      <div v-if="activeTab === 'delivery'" class="form-section">
-        <p class="section-desc">Register a material delivery. This will be stored in the database and included in future reports.</p>
+      <!-- ── DELIVERY ──────────────────────────────────────────── -->
+      <section v-show="activeTab === 'delivery'" class="section">
+        <p class="hint">Register a material delivery into the database.</p>
+
         <div class="form-grid">
           <label class="field">
             <span>Vehicle ID</span>
-            <input v-model="dForm.vehicle_id" placeholder="TRK-01" />
+            <input v-model="dForm.vehicle_id" placeholder="TRUCK-01" />
           </label>
           <label class="field">
             <span>Material</span>
@@ -202,357 +222,359 @@ async function refreshAll() {
           <label class="field">
             <span>Origin</span>
             <select v-model="dForm.origin">
-              <option v-for="d in destinations" :key="d">{{ d }}</option>
+              <option v-for="p in places" :key="p">{{ p }}</option>
             </select>
           </label>
           <label class="field">
             <span>Destination</span>
             <select v-model="dForm.destination">
-              <option v-for="d in destinations" :key="d">{{ d }}</option>
+              <option v-for="p in places" :key="p">{{ p }}</option>
             </select>
           </label>
-          <label class="field wide">
+          <label class="field full">
             <span>Quantity (tons)</span>
-            <input type="number" v-model="dForm.quantity_tons" min="1" max="500" />
+            <input type="number" v-model.number="dForm.quantity_tons" min="1" max="500" />
           </label>
         </div>
-        <button class="action-btn success" @click="submitDelivery" :disabled="loading">
+        <button class="btn success" :disabled="loading" @click="submitDelivery">
           📦 Register Delivery
         </button>
-      </div>
+      </section>
 
-      <!-- REPORTS -->
-      <div v-if="activeTab === 'reports'" class="form-section">
-        <p class="section-desc">Fetch reports from the backend. Data is pulled directly from the database.</p>
+      <!-- ── REPORTS ───────────────────────────────────────────── -->
+      <section v-show="activeTab === 'reports'" class="section">
+        <p class="hint">Fetch reports directly from the database.</p>
 
-        <div class="report-row">
+        <div class="report-controls">
           <label class="field">
             <span>Period</span>
             <select v-model="period">
-              <option value="day">Last 24h</option>
+              <option value="day">Last 24 h</option>
               <option value="week">Last 7 days</option>
               <option value="month">Last 30 days</option>
             </select>
           </label>
-          <button class="action-btn primary" @click="loadMaterial" :disabled="loading">📊 Material Report</button>
-          <button class="action-btn" @click="loadCongestion" :disabled="loading">⚠️ Congestion Report</button>
+          <button class="btn primary sm" :disabled="loading" @click="loadMaterial">📊 Material</button>
+          <button class="btn sm"         :disabled="loading" @click="loadCongestion">⚠️ Congestion</button>
         </div>
 
-        <!-- Material Report Results -->
-        <div v-if="reports?.material" class="report-result">
-          <h3>📦 Material Report — {{ reports.material.period }}</h3>
+        <!-- Material result -->
+        <div v-if="reports?.material" class="report-card">
+          <div class="report-title">📦 Material — {{ reports.material.period }}</div>
           <div class="report-stats">
             <div class="stat">
-              <span class="stat-val">{{ reports.material.delivery_count }}</span>
-              <span class="stat-label">Deliveries</span>
+              <span class="stat-n">{{ reports.material.delivery_count }}</span>
+              <span class="stat-l">Deliveries</span>
             </div>
             <div class="stat">
-              <span class="stat-val">{{ reports.material.total_tons }}</span>
-              <span class="stat-label">Total Tons</span>
+              <span class="stat-n">{{ reports.material.total_tons }}</span>
+              <span class="stat-l">Tons</span>
             </div>
           </div>
-          <div class="by-material">
-            <div v-for="(count, mat) in reports.material.by_material" :key="mat" class="mat-row">
-              <span>{{ mat }}</span>
-              <span class="count-badge">{{ count }}</span>
-            </div>
-            <div v-if="!reports.material.by_material || Object.keys(reports.material.by_material).length === 0" class="no-data">
-              No deliveries in this period
-            </div>
+          <div v-for="(n, mat) in reports.material.by_material" :key="mat" class="mat-row">
+            <span class="mat-name">{{ mat }}</span>
+            <span class="mat-n">{{ n }}</span>
+          </div>
+          <div v-if="!Object.keys(reports.material.by_material || {}).length" class="empty-hint">
+            No deliveries in this period.
           </div>
         </div>
 
-        <!-- Congestion Report Results -->
-        <div v-if="reports?.congestion" class="report-result">
-          <h3>⚠️ Congestion Report</h3>
-          <div class="report-stats">
-            <div class="stat">
-              <span class="stat-val">{{ reports.congestion.count }}</span>
-              <span class="stat-label">Total Events</span>
-            </div>
+        <!-- Congestion result -->
+        <div v-if="reports?.congestion" class="report-card">
+          <div class="report-title">⚠️ Congestion — {{ reports.congestion.count }} events</div>
+          <div v-for="(ev, i) in (reports.congestion.events || []).slice(0, 8)" :key="i" class="cong-row">
+            <span class="sev" :class="(ev.severity||'').toLowerCase()">{{ ev.severity }}</span>
+            <span class="cong-zone">{{ ev.zone_id }}</span>
+            <span class="cong-info">{{ ev.vehicle_count }} veh · {{ ev.avg_speed }} km/h</span>
           </div>
-          <div class="congestion-list">
-            <div v-for="(ev, i) in (reports.congestion.events || []).slice(0, 5)" :key="i" class="cong-row">
-              <span class="sev" :class="ev.severity?.toLowerCase()">{{ ev.severity }}</span>
-              <span>Zone {{ ev.zone_id }}</span>
-              <span class="muted">{{ ev.vehicle_count }} vehicles</span>
-            </div>
-            <div v-if="!reports.congestion.events?.length" class="no-data">No congestion events yet</div>
-          </div>
+          <div v-if="!reports.congestion.events?.length" class="empty-hint">No congestion events yet.</div>
         </div>
-
-      </div>
+      </section>
 
     </div>
-  </div>
+  </aside>
 </template>
 
 <style scoped>
-.control-panel {
+/* ── Layout ── */
+.cp {
   display: flex;
   flex-direction: column;
-  padding: 1.25rem;
+  padding: 1rem;
   min-height: 0;
+  gap: 0.6rem;
 }
-.panel-header {
+
+/* ── Header ── */
+.cp-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 0.75rem;
   flex-shrink: 0;
 }
-.panel-header h2 {
-  font-size: 1.125rem;
+.cp-header h2 {
+  font-size: 1rem;
   font-weight: 600;
   color: var(--text-primary);
   margin: 0;
 }
 .refresh-btn {
-  background: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
   border: 1px solid var(--border-glass);
+  background: transparent;
   color: var(--text-muted);
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
   cursor: pointer;
-  font-size: 1rem;
+  font-size: 0.9rem;
   display: flex;
   align-items: center;
   justify-content: center;
   transition: border-color 0.2s, color 0.2s;
 }
 .refresh-btn:hover { border-color: var(--accent-blue); color: var(--accent-blue); }
-.spinning { display: inline-block; animation: spin 1s linear infinite; }
+.refresh-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.spinning { display: inline-block; animation: spin 0.8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* Feedback */
+/* ── Feedback ── */
 .feedback {
-  padding: 0.5rem 0.75rem;
-  border-radius: 8px;
-  font-size: 0.8rem;
-  margin-bottom: 0.75rem;
-  animation: fadeIn 0.2s;
+  padding: 0.45rem 0.7rem;
+  border-radius: 7px;
+  font-size: 0.78rem;
   flex-shrink: 0;
 }
-.feedback.ok  { background: rgba(16,185,129,0.15); color: var(--accent-green); border: 1px solid rgba(16,185,129,0.3); }
-.feedback.err { background: rgba(239,68,68,0.15);  color: var(--accent-red);  border: 1px solid rgba(239,68,68,0.3); }
-@keyframes fadeIn { from {opacity:0;} to {opacity:1;} }
+.feedback.ok  { background: rgba(16,185,129,0.12); color: #6ee7b7; border: 1px solid rgba(16,185,129,0.25); }
+.feedback.err { background: rgba(239,68,68,0.12);  color: #fca5a5; border: 1px solid rgba(239,68,68,0.25); }
+.fade-enter-active, .fade-leave-active { transition: opacity 0.25s; }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
 
-/* Tabs */
+/* ── Tabs ── */
 .tabs {
   display: flex;
-  gap: 4px;
-  margin-bottom: 1rem;
-  background: rgba(0,0,0,0.2);
-  padding: 4px;
-  border-radius: 10px;
+  gap: 3px;
+  background: rgba(0,0,0,0.25);
+  padding: 3px;
+  border-radius: 9px;
   flex-shrink: 0;
 }
-.tab-btn {
+.tab {
   flex: 1;
-  padding: 0.4rem 0.25rem;
-  font-size: 0.7rem;
+  padding: 0.35rem 0.2rem;
+  font-size: 0.68rem;
   border: none;
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
-  border-radius: 7px;
-  transition: all 0.2s;
+  border-radius: 6px;
+  transition: background 0.18s, color 0.18s;
+  font-family: inherit;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  font-family: inherit;
+  gap: 3px;
   white-space: nowrap;
 }
-.tab-btn.active {
-  background: rgba(255,255,255,0.08);
-  color: var(--text-primary);
-  font-weight: 600;
-}
-.tab-btn:hover:not(.active) { background: rgba(255,255,255,0.04); color: var(--text-primary); }
+.tab-label { display: none; }
+@media (min-width: 280px) { .tab-label { display: inline; } }
+.tab.active { background: rgba(255,255,255,0.09); color: var(--text-primary); font-weight: 600; }
+.tab:hover:not(.active) { background: rgba(255,255,255,0.04); color: var(--text-primary); }
 
-/* Tab content */
-.tab-content {
+/* ── Body ── */
+.cp-body {
   flex: 1;
   overflow-y: auto;
+  padding-right: 2px;
+  min-height: 0;
 }
-.form-section { display: flex; flex-direction: column; gap: 0.75rem; }
-.section-desc { font-size: 0.75rem; color: var(--text-muted); line-height: 1.5; }
 
+/* ── Sections ── */
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.hint {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+/* ── Form grid (2 cols, fills full width) ── */
 .form-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 0.6rem;
+  gap: 0.5rem;
 }
 .field {
   display: flex;
   flex-direction: column;
-  gap: 0.3rem;
+  gap: 0.25rem;
+  min-width: 0;
 }
-.field.wide { grid-column: 1 / -1; }
+.field.full { grid-column: 1 / -1; }
 .field span {
-  font-size: 0.7rem;
+  font-size: 0.65rem;
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
-.field input, .field select {
-  background: rgba(255,255,255,0.05);
-  border: 1px solid var(--border-glass);
-  border-radius: 7px;
-  padding: 0.4rem 0.6rem;
+.field input,
+.field select {
+  width: 100%;
+  box-sizing: border-box;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.09);
+  border-radius: 6px;
+  padding: 0.35rem 0.5rem;
   color: var(--text-primary);
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   font-family: inherit;
   outline: none;
   transition: border-color 0.2s;
+  min-width: 0;
 }
-.field input:focus, .field select:focus { border-color: var(--accent-blue); }
-.field select option { background: #1a1d24; }
+.field input:focus,
+.field select:focus { border-color: var(--accent-blue); }
+.field select option { background: #181b23; }
 
-/* Action buttons */
-.action-btn {
-  padding: 0.55rem 1rem;
-  border: 1px solid var(--border-glass);
-  border-radius: 8px;
+/* ── Buttons ── */
+.btn {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 7px;
   background: rgba(255,255,255,0.05);
   color: var(--text-primary);
-  font-size: 0.8rem;
-  cursor: pointer;
+  font-size: 0.78rem;
   font-family: inherit;
-  transition: all 0.2s;
-  width: 100%;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s;
 }
-.action-btn:hover:not(:disabled) { background: rgba(255,255,255,0.1); border-color: rgba(255,255,255,0.2); }
-.action-btn.primary { border-color: rgba(59,130,246,0.4); color: #93c5fd; }
-.action-btn.primary:hover:not(:disabled) { background: rgba(59,130,246,0.15); }
-.action-btn.success { border-color: rgba(16,185,129,0.4); color: #6ee7b7; }
-.action-btn.success:hover:not(:disabled) { background: rgba(16,185,129,0.15); }
-.action-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn:hover:not(:disabled) { background: rgba(255,255,255,0.1); border-color: rgba(255,255,255,0.2); }
+.btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.btn.primary { border-color: rgba(59,130,246,0.35); color: #93c5fd; }
+.btn.primary:hover:not(:disabled) { background: rgba(59,130,246,0.12); }
+.btn.success { border-color: rgba(16,185,129,0.35); color: #6ee7b7; }
+.btn.success:hover:not(:disabled) { background: rgba(16,185,129,0.12); }
+.btn.sm { width: auto; flex-shrink: 0; padding: 0.35rem 0.65rem; font-size: 0.72rem; }
 
-/* Traffic light buttons */
-.light-buttons {
+/* ── Traffic light buttons ── */
+.light-row {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 0.5rem;
+  gap: 0.4rem;
 }
 .light-btn {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.4rem;
-  padding: 0.75rem 0.5rem;
-  border-radius: 10px;
-  border: 1px solid var(--border-glass);
-  background: rgba(255,255,255,0.03);
+  gap: 0.3rem;
+  padding: 0.65rem 0.25rem;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.02);
   cursor: pointer;
-  font-size: 0.7rem;
+  font-size: 0.65rem;
   font-family: inherit;
-  color: var(--text-muted);
-  transition: all 0.2s;
   font-weight: 600;
   letter-spacing: 0.05em;
+  color: var(--text-muted);
+  transition: transform 0.2s, background 0.2s, border-color 0.2s;
 }
-.light-btn .light-dot {
-  width: 20px;
-  height: 20px;
+.light-btn:hover:not(:disabled) { transform: translateY(-2px); }
+.light-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.bulb {
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
   border: 2px solid currentColor;
-  opacity: 0.5;
-  transition: all 0.2s;
+  opacity: 0.6;
 }
 .light-btn.green  { border-color: rgba(16,185,129,0.3); color: #34d399; }
-.light-btn.green:hover:not(:disabled) { background: rgba(16,185,129,0.1); }
-.light-btn.green .light-dot  { background: #10b981; box-shadow: 0 0 10px #10b981; opacity: 1; }
+.light-btn.green  .bulb { background: #10b981; box-shadow: 0 0 8px #10b981; opacity: 1; }
+.light-btn.green:hover:not(:disabled)  { background: rgba(16,185,129,0.1); }
 .light-btn.yellow { border-color: rgba(245,158,11,0.3); color: #fbbf24; }
-.light-btn.yellow .light-dot { background: #f59e0b; box-shadow: 0 0 10px #f59e0b; opacity: 1; }
+.light-btn.yellow .bulb { background: #f59e0b; box-shadow: 0 0 8px #f59e0b; opacity: 1; }
+.light-btn.yellow:hover:not(:disabled) { background: rgba(245,158,11,0.1); }
 .light-btn.red    { border-color: rgba(239,68,68,0.3); color: #f87171; }
-.light-btn.red .light-dot    { background: #ef4444; box-shadow: 0 0 10px #ef4444; opacity: 1; }
-.light-btn:hover:not(:disabled) { transform: translateY(-2px); }
-.light-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.light-btn.red    .bulb { background: #ef4444; box-shadow: 0 0 8px #ef4444; opacity: 1; }
+.light-btn.red:hover:not(:disabled)    { background: rgba(239,68,68,0.1); }
 
 /* Current lights table */
-.current-lights { display: flex; flex-direction: column; gap: 0.4rem; margin-top: 0.5rem; }
-.light-status-row {
+.lights-table { display: flex; flex-direction: column; gap: 0.3rem; }
+.lt-row {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  font-size: 0.8rem;
-  padding: 0.4rem 0.6rem;
+  font-size: 0.75rem;
+  padding: 0.35rem 0.5rem;
   background: rgba(255,255,255,0.02);
-  border-radius: 6px;
+  border-radius: 5px;
 }
-.zone-badge {
-  font-size: 0.65rem;
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: rgba(255,255,255,0.08);
-  color: var(--text-muted);
-}
-.state-chip {
-  margin-left: auto;
-  font-size: 0.7rem;
-  font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 4px;
-}
-.state-chip.green  { background: rgba(16,185,129,0.15); color: #34d399; }
-.state-chip.red    { background: rgba(239,68,68,0.15); color: #f87171; }
-.state-chip.yellow { background: rgba(245,158,11,0.15); color: #fbbf24; }
+.lt-id    { font-weight: 600; flex-shrink: 0; }
+.lt-zone  { color: var(--text-muted); font-size: 0.65rem; flex: 1; }
+.lt-chip  { margin-left: auto; font-size: 0.65rem; font-weight: 700; padding: 1px 6px; border-radius: 4px; }
+.lt-chip.green  { background: rgba(16,185,129,0.15); color: #34d399; }
+.lt-chip.red    { background: rgba(239,68,68,0.15);  color: #f87171; }
+.lt-chip.yellow { background: rgba(245,158,11,0.15); color: #fbbf24; }
 
-/* Reports */
-.report-row { display: flex; gap: 0.5rem; align-items: flex-end; flex-wrap: wrap; }
-.report-row .field { flex: 1; min-width: 120px; }
-.report-row .action-btn { flex: 0 0 auto; width: auto; }
-.report-result {
-  background: rgba(0,0,0,0.2);
-  border: 1px solid var(--border-glass);
-  border-radius: 10px;
-  padding: 1rem;
+/* ── Reports ── */
+.report-controls {
+  display: flex;
+  gap: 0.4rem;
+  align-items: flex-end;
+  flex-wrap: wrap;
 }
-.report-result h3 { font-size: 0.875rem; margin-bottom: 0.75rem; color: var(--text-primary); }
-.report-stats { display: flex; gap: 1rem; margin-bottom: 0.75rem; }
-.stat { display: flex; flex-direction: column; align-items: center; gap: 2px; }
-.stat-val { font-size: 1.5rem; font-weight: 700; color: #fff; }
-.stat-label { font-size: 0.65rem; color: var(--text-muted); text-transform: uppercase; }
-.by-material { display: flex; flex-direction: column; gap: 0.3rem; }
+.report-controls .field { flex: 1; min-width: 90px; }
+.report-card {
+  background: rgba(0,0,0,0.2);
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 8px;
+  padding: 0.75rem;
+}
+.report-title { font-size: 0.78rem; font-weight: 600; margin-bottom: 0.6rem; color: var(--text-primary); }
+.report-stats { display: flex; gap: 1rem; margin-bottom: 0.6rem; }
+.stat { display: flex; flex-direction: column; align-items: center; gap: 1px; }
+.stat-n { font-size: 1.4rem; font-weight: 700; color: #fff; line-height: 1; }
+.stat-l { font-size: 0.6rem; color: var(--text-muted); text-transform: uppercase; }
 .mat-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 0.8rem;
-  padding: 0.25rem 0;
+  font-size: 0.75rem;
+  padding: 0.2rem 0;
   border-bottom: 1px solid rgba(255,255,255,0.04);
-  text-transform: capitalize;
 }
-.count-badge {
-  background: rgba(59,130,246,0.2);
+.mat-name { text-transform: capitalize; }
+.mat-n {
+  background: rgba(59,130,246,0.15);
   color: #93c5fd;
-  padding: 2px 8px;
+  padding: 1px 6px;
   border-radius: 4px;
-  font-size: 0.7rem;
-  font-weight: 600;
+  font-size: 0.65rem;
+  font-weight: 700;
 }
-.congestion-list { display: flex; flex-direction: column; gap: 0.35rem; }
 .cong-row {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  font-size: 0.8rem;
-  padding: 0.3rem 0;
+  gap: 0.4rem;
+  font-size: 0.72rem;
+  padding: 0.2rem 0;
   border-bottom: 1px solid rgba(255,255,255,0.04);
 }
 .sev {
-  font-size: 0.65rem;
+  font-size: 0.6rem;
   font-weight: 700;
-  padding: 2px 6px;
-  border-radius: 4px;
+  padding: 1px 5px;
+  border-radius: 3px;
   text-transform: uppercase;
 }
-.sev.high   { background: rgba(239,68,68,0.2); color: #f87171; }
-.sev.medium { background: rgba(245,158,11,0.2); color: #fbbf24; }
-.sev.low    { background: rgba(16,185,129,0.2); color: #34d399; }
-.muted { color: var(--text-muted); font-size: 0.75rem; }
-.no-data { font-size: 0.75rem; color: var(--text-muted); text-align: center; padding: 0.5rem; }
+.sev.high   { background: rgba(239,68,68,0.18);  color: #f87171; }
+.sev.medium { background: rgba(245,158,11,0.18); color: #fbbf24; }
+.sev.low    { background: rgba(16,185,129,0.18); color: #34d399; }
+.cong-zone { font-weight: 600; flex-shrink: 0; }
+.cong-info { color: var(--text-muted); }
+.empty-hint { font-size: 0.7rem; color: var(--text-muted); text-align: center; padding: 0.5rem 0; }
 </style>

@@ -1,153 +1,160 @@
 import { ref, onMounted, onUnmounted } from 'vue';
 
+// ─── Config ──────────────────────────────────────────────────────────────────
 const GATEWAY_URL = 'http://127.0.0.1:8000';
-const WS_URL = 'ws://127.0.0.1:8000/ws/events';
-const API_TOKEN = 'mvts-demo-token';
+const WS_URL      = 'ws://127.0.0.1:8000/ws/events';
+const API_TOKEN   = 'mvts-demo-token';
 
-const headers = {
+const HEADERS = {
   'x-api-token': API_TOKEN,
   'Content-Type': 'application/json',
 };
 
-// Singleton state shared across all composable calls
-const isConnected = ref(false);
-const vehicles = ref({});
-const trafficLights = ref({});
-const events = ref([]);
-const reports = ref({ material: null, congestion: null });
-const lastError = ref(null);
+// ─── Singleton state ──────────────────────────────────────────────────────────
+// Shared reactively across all composable calls in the app
+const isConnected  = ref(false);
+const vehicles     = ref({});   // keyed by vehicle_id => VehiclePositionPayload
+const trafficLights = ref({});  // keyed by TL-id => { zone_id, state }
+const events       = ref([]);   // last 100 events (newest first)
+const reports      = ref({ material: null, congestion: null });
+const lastError    = ref(null);
 
 let ws = null;
 let reconnectTimer = null;
 
-function addEvent(payload, time) {
-  events.value.unshift({ time: time || new Date().toLocaleTimeString(), ...payload });
+// ─── WS helpers ───────────────────────────────────────────────────────────────
+function pushEvent(payload) {
+  events.value.unshift({ time: new Date().toLocaleTimeString(), ...payload });
   if (events.value.length > 100) events.value.pop();
 }
 
-function applyEvent(event) {
-  const type = event.event_type;
-  const payload = event.payload || {};
+function applyEvent(raw) {
+  const type    = raw.event_type;
+  const payload = raw.payload || {};
+
   if (type === 'vehicle.position.updated') {
-    vehicles.value[payload.vehicle_id] = { ...vehicles.value[payload.vehicle_id], ...payload };
+    // payload has: vehicle_id, zone_id, x, y, speed, destination
+    vehicles.value[payload.vehicle_id] = { ...payload };
   } else if (type === 'traffic_light.changed') {
+    // payload: traffic_light_id, zone_id, previous_state, new_state, changed_by
     trafficLights.value[payload.traffic_light_id] = {
       zone_id: payload.zone_id,
-      state: payload.new_state,
+      state:   payload.new_state,
     };
-  } else if (type === 'congestion.detected') {
-    // congestion event, just log
   }
+  // congestion.detected and delivery.created are logged only
 }
 
 function connectWS() {
-  if (ws && ws.readyState === WebSocket.OPEN) return;
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+
   ws = new WebSocket(`${WS_URL}?token=${API_TOKEN}`);
+
   ws.onopen = () => {
     isConnected.value = true;
-    lastError.value = null;
+    lastError.value   = null;
   };
-  ws.onmessage = (event) => {
+
+  ws.onmessage = (msg) => {
     try {
-      const data = JSON.parse(event.data);
-      // Gateway sends both snapshot on connect and event envelopes after
-      if (data.vehicle_positions !== undefined) {
-        // It's a snapshot
-        vehicles.value = data.vehicle_positions || {};
-        trafficLights.value = data.traffic_lights || {};
-      } else {
-        // It's an event envelope
-        applyEvent(data);
-        addEvent(data);
+      const data = JSON.parse(msg.data);
+      // First message after connect is a snapshot { traffic_lights, vehicle_positions }
+      if ('vehicle_positions' in data) {
+        vehicles.value     = data.vehicle_positions  || {};
+        trafficLights.value = data.traffic_lights    || {};
+        return;
       }
+      // All subsequent messages are EventEnvelope objects
+      applyEvent(data);
+      pushEvent(data);
     } catch (e) {
-      console.error('WS parse error', e);
+      console.error('[WS] parse error:', e);
     }
   };
+
   ws.onclose = () => {
     isConnected.value = false;
     reconnectTimer = setTimeout(connectWS, 3000);
   };
-  ws.onerror = (e) => {
-    lastError.value = 'WebSocket connection failed';
-    console.error('WS error', e);
+
+  ws.onerror = () => {
+    lastError.value = 'Cannot reach the gateway on port 8000';
   };
 }
 
-async function fetchState() {
-  try {
-    const resp = await fetch(`${GATEWAY_URL}/api/state`, { headers });
-    if (resp.ok) {
-      const data = await resp.json();
-      vehicles.value = data.vehicle_positions || {};
-      trafficLights.value = data.traffic_lights || {};
-    }
-  } catch (e) {
-    console.error('Failed to fetch state:', e);
+// ─── REST helpers ─────────────────────────────────────────────────────────────
+async function apiFetch(path, options = {}) {
+  const resp = await fetch(`${GATEWAY_URL}${path}`, {
+    ...options,
+    headers: { ...HEADERS, ...(options.headers || {}) },
+  });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    throw new Error(`${resp.status} ${resp.statusText}${text ? ': ' + text : ''}`);
   }
+  return resp.json();
 }
 
-// ─── API Actions ─────────────────────────────────────────────────────────────
+async function fetchState() {
+  const data = await apiFetch('/api/state');
+  vehicles.value      = data.vehicle_positions || {};
+  trafficLights.value = data.traffic_lights    || {};
+}
 
+// ─── API actions (exported) ───────────────────────────────────────────────────
 async function publishVehiclePosition(payload) {
-  // payload: { vehicle_id, zone_id, x, y, speed, destination }
-  const resp = await fetch(`${GATEWAY_URL}/api/vehicles/position`, {
+  // Required fields: vehicle_id, zone_id, x(float), y(float), speed(float), destination
+  return apiFetch('/api/vehicles/position', {
     method: 'POST',
-    headers,
-    body: JSON.stringify(payload),
+    body: JSON.stringify({
+      ...payload,
+      x:     Number(payload.x),
+      y:     Number(payload.y),
+      speed: Number(payload.speed),
+    }),
   });
-  if (!resp.ok) throw new Error(`Error ${resp.status}: ${await resp.text()}`);
-  return resp.json();
 }
 
 async function changeTrafficLight(traffic_light_id, new_state) {
-  const resp = await fetch(`${GATEWAY_URL}/api/traffic-lights/change`, {
+  return apiFetch('/api/traffic-lights/change', {
     method: 'POST',
-    headers,
     body: JSON.stringify({ traffic_light_id, new_state, changed_by: 'mvts-ui' }),
   });
-  if (!resp.ok) throw new Error(`Error ${resp.status}: ${await resp.text()}`);
-  return resp.json();
 }
 
 async function createDelivery(payload) {
-  // payload: { vehicle_id, origin, destination, material_type, quantity_tons }
-  const resp = await fetch(`${GATEWAY_URL}/api/deliveries`, {
+  return apiFetch('/api/deliveries', {
     method: 'POST',
-    headers,
-    body: JSON.stringify(payload),
+    body: JSON.stringify({
+      ...payload,
+      quantity_tons: Number(payload.quantity_tons),
+    }),
   });
-  if (!resp.ok) throw new Error(`Error ${resp.status}: ${await resp.text()}`);
-  return resp.json();
 }
 
 async function fetchMaterialReport(period = 'day') {
-  const resp = await fetch(`${GATEWAY_URL}/api/reports/material?period=${period}`, { headers });
-  if (!resp.ok) throw new Error(`Error ${resp.status}`);
-  const data = await resp.json();
+  const data = await apiFetch(`/api/reports/material?period=${period}`);
   reports.value.material = data;
   return data;
 }
 
 async function fetchCongestionReport() {
-  const resp = await fetch(`${GATEWAY_URL}/api/reports/congestions`, { headers });
-  if (!resp.ok) throw new Error(`Error ${resp.status}`);
-  const data = await resp.json();
+  const data = await apiFetch('/api/reports/congestions');
   reports.value.congestion = data;
   return data;
 }
 
-// ─── Composable Export ────────────────────────────────────────────────────────
-
+// ─── Composable ───────────────────────────────────────────────────────────────
 export function useMinehaulGateway() {
   onMounted(() => {
-    fetchState();
     connectWS();
+    // Fetch HTTP snapshot in parallel as fallback
+    fetchState().catch(() => {});
   });
 
   onUnmounted(() => {
     clearTimeout(reconnectTimer);
-    if (ws) ws.close();
+    // Don't close ws — singleton keeps it alive across component remounts
   });
 
   return {
@@ -157,7 +164,7 @@ export function useMinehaulGateway() {
     events,
     reports,
     lastError,
-    // Actions
+    // actions
     publishVehiclePosition,
     changeTrafficLight,
     createDelivery,
