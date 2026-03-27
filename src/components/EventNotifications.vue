@@ -1,164 +1,246 @@
 <script setup>
+import { computed } from 'vue';
+
+import {
+  formatFacilityLabel,
+  formatMaterialLabel,
+  getTrafficLightStateMeta,
+  getVehicleState,
+} from '../utils/runtimeCatalog';
+
 const props = defineProps({
   events: { type: Array, default: () => [] },
+  topology: { type: Object, default: null },
 });
 
-// ─── Event humanizer ──────────────────────────────────────────────────────────
-function humanize(ev) {
-  const type    = ev.event_type || '';
-  const payload = ev.payload    || {};
+function normalizeEvent(event) {
+  const type = event.event_type || '';
+  const payload = event.payload || {};
 
   switch (type) {
-
     case 'vehicle.position.updated': {
-      const { vehicle_id, zone_id, x, y, speed, destination } = payload;
-      const s = speed !== undefined ? `${Number(speed).toFixed(1)} km/h` : '';
-      const pos = (x !== undefined && y !== undefined)
-        ? ` at (${Number(x).toFixed(1)}, ${Number(y).toFixed(1)})`
-        : '';
+      const state = getVehicleState(payload.speed);
       return {
-        icon: '🚜',
-        text: `<strong>${vehicle_id}</strong> moved to <strong>${zone_id}</strong>${pos}${s ? ` · ${s}` : ''}${destination ? ` → ${destination}` : ''}`,
-        cls:  'ev-vehicle',
+        tag: 'VEH',
+        tone: 'vehicle',
+        title: payload.vehicle_id || 'Truck',
+        body: `${state.label} · ${payload.zone_id || 'Sin zona'} · ${Number(payload.speed || 0).toFixed(1)} km/h`,
+        detail: `${formatMaterialLabel(payload.material_type, props.topology)} -> ${formatFacilityLabel(payload.destination, props.topology)}`,
       };
     }
 
     case 'traffic_light.changed': {
-      const { traffic_light_id, zone_id, previous_state, new_state, changed_by } = payload;
+      const previous = getTrafficLightStateMeta(payload.previous_state);
+      const next = getTrafficLightStateMeta(payload.new_state);
       return {
-        icon: '🚦',
-        text: `Light <strong>${traffic_light_id}</strong> (${zone_id}) changed `
-             + `${stateIcon(previous_state)} → ${stateIcon(new_state)}`
-             + (changed_by ? ` by ${changed_by}` : ''),
-        cls:  'ev-light',
+        tag: 'SIG',
+        tone: 'signal',
+        title: payload.traffic_light_id || 'Semaforo',
+        body: `${previous.label} -> ${next.label}`,
+        detail: `${payload.zone_id || 'Sin zona'} · ${payload.changed_by || 'operador'}`,
       };
     }
 
     case 'delivery.created': {
-      const { vehicle_id, material_type, quantity_tons, origin, destination } = payload;
       return {
-        icon: '📦',
-        text: `<strong>${vehicle_id}</strong> delivered `
-             + `${quantity_tons} t of <strong>${material_type}</strong> `
-             + `from ${origin} → ${destination}`,
-        cls:  'ev-delivery',
+        tag: 'DLV',
+        tone: 'delivery',
+        title: payload.vehicle_id || 'Despacho',
+        body: `${payload.quantity_tons} t · ${formatMaterialLabel(payload.material_type, props.topology)}`,
+        detail: `${formatFacilityLabel(payload.origin, props.topology)} -> ${formatFacilityLabel(payload.destination, props.topology)}`,
       };
     }
 
     case 'congestion.detected': {
-      const { zone_id, severity, vehicle_count, avg_speed } = payload;
-      const sev = (severity || '').toLowerCase();
       return {
-        icon: sev === 'high' ? '🔴' : sev === 'medium' ? '🟡' : '🟢',
-        text: `Congestion in <strong>${zone_id}</strong> — ${severity} severity · `
-             + `${vehicle_count} vehicles · avg ${avg_speed} km/h`,
-        cls:  'ev-congestion',
+        tag: 'TRF',
+        tone: 'congestion',
+        title: payload.zone_id || 'Congestion',
+        body: `${payload.severity || 'LOW'} · ${payload.vehicle_count || 0} vehiculos`,
+        detail: `Promedio ${payload.avg_speed || 0} km/h · ${payload.duration_seconds || 0}s`,
       };
     }
 
     default:
       return {
-        icon: '📡',
-        text: `Event: <strong>${type || 'unknown'}</strong>`,
-        cls:  'ev-default',
+        tag: 'SYS',
+        tone: 'default',
+        title: type || 'Evento',
+        body: 'Actualizacion del gateway',
+        detail: event.source || 'sistema',
       };
   }
 }
 
-function stateIcon(state) {
-  const s = (state || '').toUpperCase();
-  if (s === 'GREEN')  return '🟢';
-  if (s === 'RED')    return '🔴';
-  if (s === 'YELLOW') return '🟡';
-  return '⬜';
-}
+const eventList = computed(() => props.events.map((event) => ({ ...event, ui: normalizeEvent(event) })));
 </script>
 
 <template>
-  <div class="ev-panel glass-panel">
-    <h2>Recent Events</h2>
-    <div class="ev-list">
-      <div v-if="events.length === 0" class="ev-empty">
-        <span>📡</span><span>Listening for events…</span>
-      </div>
-      <div
-        v-for="(ev, i) in events"
-        :key="i"
-        class="ev-item"
-        :class="humanize(ev).cls"
-      >
-        <div class="ev-meta">
-          <span class="ev-icon">{{ humanize(ev).icon }}</span>
-          <span class="ev-time">{{ ev.time }}</span>
-        </div>
-        <div class="ev-text" v-html="humanize(ev).text"></div>
+  <aside class="events-panel glass-panel">
+    <div class="panel-head">
+      <div>
+        <p class="eyebrow">Live Feed</p>
+        <h2>Eventos de campo</h2>
       </div>
     </div>
-  </div>
+
+    <div class="event-list">
+      <div v-if="eventList.length === 0" class="empty-state">
+        Escuchando eventos del gateway...
+      </div>
+
+      <article v-for="event in eventList" :key="event.event_id || `${event.time}-${event.event_type}`" class="event-row" :data-tone="event.ui.tone">
+        <div class="event-top">
+          <span class="event-tag">{{ event.ui.tag }}</span>
+          <span class="event-time">{{ event.time }}</span>
+        </div>
+
+        <strong>{{ event.ui.title }}</strong>
+        <p>{{ event.ui.body }}</p>
+        <span class="event-detail">{{ event.ui.detail }}</span>
+      </article>
+    </div>
+  </aside>
 </template>
 
 <style scoped>
-.ev-panel {
+.events-panel {
   display: flex;
   flex-direction: column;
-  padding: 1rem;
+  height: 100%;
   min-height: 0;
+  padding: 1rem;
+  overflow: hidden;
+  container-type: inline-size;
 }
-.ev-panel h2 {
+
+.panel-head {
+  margin-bottom: 0.8rem;
+}
+
+.eyebrow {
+  margin: 0 0 0.15rem;
+  color: rgba(186, 199, 216, 0.72);
+  font-size: 0.62rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.panel-head h2 {
+  margin: 0;
   font-size: 1rem;
-  font-weight: 600;
-  color: var(--text-primary);
-  margin: 0 0 0.75rem;
-  flex-shrink: 0;
 }
-.ev-list {
+
+.event-list {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
-  padding-right: 2px;
+  gap: 0.55rem;
 }
-.ev-empty {
+
+.event-row {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 0.4rem;
-  color: var(--text-muted);
-  font-size: 0.8rem;
-  padding: 2rem 0;
-  opacity: 0.7;
+  gap: 0.22rem;
+  padding: 0.7rem 0.75rem;
+  border-radius: 15px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.03);
 }
-.ev-item {
-  padding: 0.5rem 0.65rem;
-  border-radius: 7px;
-  border-left: 3px solid rgba(255,255,255,0.12);
-  background: rgba(255,255,255,0.02);
-  flex-shrink: 0;
-  animation: slideIn 0.22s ease-out;
-}
-@keyframes slideIn {
-  from { opacity: 0; transform: translateX(6px); }
-  to   { opacity: 1; transform: translateX(0); }
-}
-.ev-vehicle   { border-left-color: #60a5fa; }
-.ev-light     { border-left-color: #f59e0b; }
-.ev-delivery  { border-left-color: #34d399; }
-.ev-congestion { border-left-color: #ef4444; }
 
-.ev-meta {
+.event-row[data-tone='vehicle'] {
+  box-shadow: inset 0 0 0 1px rgba(79, 169, 255, 0.12);
+}
+
+.event-row[data-tone='signal'] {
+  box-shadow: inset 0 0 0 1px rgba(242, 180, 71, 0.12);
+}
+
+.event-row[data-tone='delivery'] {
+  box-shadow: inset 0 0 0 1px rgba(63, 208, 126, 0.12);
+}
+
+.event-row[data-tone='congestion'] {
+  box-shadow: inset 0 0 0 1px rgba(239, 98, 98, 0.12);
+}
+
+.event-top {
   display: flex;
   align-items: center;
-  gap: 0.35rem;
-  margin-bottom: 0.2rem;
+  justify-content: space-between;
+  gap: 0.4rem;
 }
-.ev-icon { font-size: 0.85rem; }
-.ev-time { font-size: 0.6rem; color: var(--text-muted); font-family: monospace; }
-.ev-text {
-  font-size: 0.75rem;
-  color: var(--text-primary);
+
+.event-tag {
+  padding: 0.18rem 0.44rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(230, 238, 248, 0.82);
+  font-size: 0.56rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.event-time {
+  color: var(--text-muted);
+  font-size: 0.62rem;
+  font-family: var(--font-mono);
+}
+
+.event-row strong {
+  font-size: 0.79rem;
+}
+
+.event-row p {
+  margin: 0;
+  color: rgba(223, 233, 244, 0.86);
+  font-size: 0.72rem;
   line-height: 1.5;
 }
-.ev-text :deep(strong) { color: #fff; font-weight: 600; }
+
+.event-detail {
+  color: var(--text-muted);
+  font-size: 0.66rem;
+}
+
+.empty-state {
+  display: grid;
+  place-items: center;
+  min-height: 200px;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  text-align: center;
+}
+
+@container (min-width: 760px) {
+  .event-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-content: start;
+  }
+
+  .empty-state {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 1400px), (max-height: 820px) {
+  .events-panel {
+    height: auto;
+    max-height: 380px;
+  }
+
+  .event-list {
+    padding-right: 0.12rem;
+  }
+}
+
+@media (max-width: 760px) {
+  .events-panel {
+    max-height: none;
+  }
+}
 </style>
