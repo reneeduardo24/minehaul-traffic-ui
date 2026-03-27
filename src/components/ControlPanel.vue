@@ -463,7 +463,7 @@ async function refreshAll() {
   transition: all 0.2s;
 }
 .light-btn.green  { border-color: rgba(16,185,129,0.3); color: #34d399; }
-.light-btn.green:hover:not(:disabled):  { background: rgba(16,185,129,0.1); }
+.light-btn.green:hover:not(:disabled) { background: rgba(16,185,129,0.1); }
 .light-btn.green .light-dot  { background: #10b981; box-shadow: 0 0 10px #10b981; opacity: 1; }
 .light-btn.yellow { border-color: rgba(245,158,11,0.3); color: #fbbf24; }
 .light-btn.yellow .light-dot { background: #f59e0b; box-shadow: 0 0 10px #f59e0b; opacity: 1; }
