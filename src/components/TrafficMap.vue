@@ -1,27 +1,47 @@
 <script setup>
 /**
- * TrafficMap — Graphical mine map
+ * TrafficMap — Single-coordinate-system mine map
  *
- * COORDINATE SYSTEM (derived from vehicle_simulator.py):
- *   The backend uses ABSOLUTE world coordinates (not zone-relative),
- *   in the range roughly x:[0..25], y:[0..6].
+ * ══════════════════════════════════════════════════════════════
+ * ROOT CAUSE OF PREVIOUS BUGS:
+ *   The SVG roads used a manual "0 0 100 100" coordinate space
+ *   with positions drawn by eye (e.g., rect at y=74).
+ *   Vehicle divs used worldToCanvas() producing different %s.
+ *   These two spaces NEVER coincided → trucks never on road.
  *
- *   World layout (from simulator routes):
- *     Z1  x≈0-2,   y≈0-2   → PIT loading area (bottom-left)
- *     Z2  x≈10-14, y≈1-5   → Main road / bottleneck (center)
- *     Z3  x≈20-22, y≈5     → CRUSHER-A (top-right)
+ * THE FIX — One function w2pct() governs everything:
+ *   SVG viewBox="0 0 100 100" + vehicle div positions
+ *   ALL use identical percentage math.
  *
- *   Fixed infrastructure:
- *     DEPOT     x=0,  y=0   (start/home base)
- *     PIT-1..3  x≈0-2, y≈0-2
- *     CRUSHER-A x≈21, y≈5
- *     TL-01     zone Z1 (near pit exit) → x≈3, y≈1
- *     TL-02     zone Z2 (road center)   → x≈12, y≈3
+ * ══ BACKEND COORDINATE SYSTEM (from vehicle_simulator.py) ══
+ *   Fields in payload: vehicle_id, zone_id, x, y, speed, destination
+ *   x ∈ [0, 22]   — increases left → right   (absolute, NOT zone-relative)
+ *   y ∈ [0,  5]   — increases bottom → top   (physics / Y-up)
  *
- * WORLD → CANVAS mapping:
- *   We define WORLD_W=26, WORLD_H=7 and map linearly to 0-100%.
- *   left% = (x / WORLD_W) * 100
- *   top%  = (1 - y / WORLD_H) * 100   ← flip Y so y=0 is bottom
+ *   Zone spatial layout:
+ *     Z1 (PIT area):    x ∈ [0,   3],  y ∈ [0, 2]
+ *     Z2 (haul road):   x ∈ [10, 14],  y ∈ [1, 4]
+ *     Z3 (CRUSHER):     x ∈ [20, 22],  y ≈ 5
+ *
+ * ══ TRANSFORM: w2pct(worldX, worldY) ══
+ *   Converts world coords → CSS percentages (same values used in SVG).
+ *
+ *   WORLD_MAX_X = 23   (1 unit beyond max simulator x=22)
+ *   WORLD_MAX_Y = 5.5  (0.5 above max simulator y=5)
+ *   MX = 4  (horizontal margin %)
+ *   MY = 6  (vertical margin %)
+ *
+ *   pctX = MX + (worldX / WORLD_MAX_X) * (100 - 2*MX)
+ *        = 4  + (worldX / 23) * 92
+ *
+ *   pctY = MY + (1 - worldY / WORLD_MAX_Y) * (100 - 2*MY)
+ *        = 6  + (1 - worldY / 5.5) * 88          ← Y FLIPPED
+ *
+ *   Validation examples:
+ *     w2pct(0,  0)  → (4,  94)   bottom-left  = Z1 PIT start      ✓
+ *     w2pct(12, 4)  → (52, 30)   upper-center = Z2 TRUCK-01 lane  ✓
+ *     w2pct(21, 5)  → (88, 14)   top-right    = CRUSHER-A         ✓
+ * ══════════════════════════════════════════════════════════════
  */
 import { computed } from 'vue';
 
@@ -30,67 +50,128 @@ const props = defineProps({
   trafficLights: { type: Object, default: () => ({}) },
 });
 
-// World extent — set to just beyond the simulator's max coords
-const WORLD_W = 26;
-const WORLD_H = 7;
+// ─── Single coordinate transform ─────────────────────────────────────────────
+const WORLD_MAX_X = 23;
+const WORLD_MAX_Y = 5.5;
+const MX = 4;   // horizontal margin %
+const MY = 6;   // vertical margin %
 
-function worldToCanvas(x, y) {
-  return {
-    left: ((x / WORLD_W) * 100).toFixed(2) + '%',
-    top:  (((WORLD_H - y) / WORLD_H) * 100).toFixed(2) + '%',
-  };
+/** World → percentage (0-100). Used by BOTH SVG and positioned divs. */
+function w2pct(wx, wy) {
+  const x = MX + (wx / WORLD_MAX_X) * (100 - 2 * MX);
+  const y = MY + (1 - wy / WORLD_MAX_Y) * (100 - 2 * MY);
+  return { x: +x.toFixed(3), y: +y.toFixed(3) };
 }
 
-// Fixed infrastructure points
-const INFRA = [
-  { id: 'DEPOT',     x: 0,  y: 0,   icon: '🏭', label: 'DEPOT', color: '#60a5fa' },
-  { id: 'PIT-1',     x: 0,  y: 2,   icon: '⛏',  label: 'PIT-1', color: '#f59e0b' },
-  { id: 'PIT-2',     x: 1,  y: 1,   icon: '⛏',  label: 'PIT-2', color: '#f59e0b' },
-  { id: 'PIT-3',     x: 2,  y: 0,   icon: '⛏',  label: 'PIT-3', color: '#f59e0b' },
-  { id: 'CRUSHER-A', x: 21, y: 5,   icon: '⚙️',  label: 'CRUSHER-A', color: '#a78bfa' },
+/** Shorthand: "x,y" string for SVG polygon/polyline points */
+function pt(wx, wy) {
+  const p = w2pct(wx, wy);
+  return `${p.x},${p.y}`;
+}
+
+// ─── Map geometry — all defined in world coords, rendered via w2pct() ─────────
+
+// Zone background bands (world x ranges)
+const ZONES = [
+  { id: 'Z1', label: 'Z1', wx1: -1,  wx2: 9,  color: 'rgba(245,158,11,0.06)'  },
+  { id: 'Z2', label: 'Z2', wx1: 9,   wx2: 16, color: 'rgba(148,163,184,0.05)' },
+  { id: 'Z3', label: 'Z3', wx1: 16,  wx2: 24, color: 'rgba(167,139,250,0.06)' },
 ];
 
-// Traffic light fixed positions (logical, matching zone assignments)
-const TL_POSITIONS = {
-  'TL-01': { x: 3,  y: 1, zone: 'Z1' },  // Pit exit intersection
-  'TL-02': { x: 12, y: 3, zone: 'Z2' },  // Road center throttle point
-};
-
-const vehicleList = computed(() =>
-  Object.values(props.vehicles).map(v => ({
-    ...v,
-    pos: worldToCanvas(v.x ?? 0, v.y ?? 0),
+// Computed so w2pct runs once per zone
+const zoneBands = computed(() =>
+  ZONES.map(z => ({
+    ...z,
+    x1: w2pct(z.wx1, 0).x,
+    x2: w2pct(z.wx2, 0).x,
+    lx: w2pct((z.wx1 + z.wx2) / 2, 0).x,
   }))
 );
 
-const lightList = computed(() =>
-  Object.entries(props.trafficLights).map(([id, d]) => {
-    const pin = TL_POSITIONS[id] ?? { x: 5, y: 3 };
-    return {
-      id,
-      state:  (d.state ?? d.status ?? 'UNKNOWN').toUpperCase(),
-      zone_id: d.zone_id,
-      pos: worldToCanvas(pin.x, pin.y),
-    };
+// Road polygon — encloses all truck routes with ~0.5-unit margin
+// Bottom edge (low world-y) left→right, then top edge (high world-y) right→left
+const ROAD_PTS = [
+  // bottom edge
+  [0, -0.2], [9, 0.5], [14, 0.5], [23, 4.5],
+  // top edge (reversed)
+  [23, 5.5], [14, 4.5], [9, 4], [0.5, 2.5],
+].map(([x, y]) => pt(x, y)).join(' ');
+
+// Actual truck lane guides (from simulator routes — these ARE the truck paths)
+const LANES = [
+  [[0,0], [10,3], [13.5,4], [20,5]],   // TRUCK-01
+  [[1,1], [10,2], [13.5,2], [21,5]],   // TRUCK-02
+  [[2,2], [10,1], [13.5,1], [22,5]],   // TRUCK-03
+].map(pts => pts.map(([x, y]) => pt(x, y)).join(' '));
+
+// Zone boundary x positions (world x → pct)
+const ZONE_DIVIDERS = [9, 16].map(wx => w2pct(wx, 0).x);
+
+// Infrastructure nodes — world positions from simulator + logical reasoning
+const INFRA = [
+  { id: 'PIT-1',     wx: 0,    wy: 0,   icon: '⛏', label: 'PIT-1',     color: '#f59e0b' },
+  { id: 'PIT-2',     wx: 1,    wy: 1,   icon: '⛏', label: 'PIT-2',     color: '#f59e0b' },
+  { id: 'PIT-3',     wx: 2,    wy: 2,   icon: '⛏', label: 'PIT-3',     color: '#e8870d' },
+  { id: 'CRUSHER-A', wx: 21.5, wy: 5.2, icon: '⚙', label: 'CRUSHER',   color: '#a78bfa' },
+];
+
+const infraComputed = computed(() =>
+  INFRA.map(n => ({ ...n, p: w2pct(n.wx, n.wy) }))
+);
+
+// Traffic light world positions — placed at real choke points on the road
+//   TL-01: Z1 side of Z1→Z2 boundary, mid-height of Z2 entry spread (y=2.5)
+//   TL-02: Z2 center, x=12 (middle of all trucks' x-range), y=2.5 (mid-lane)
+const TL_POS = {
+  'TL-01': { wx: 8.5, wy: 2.5 },
+  'TL-02': { wx: 12,  wy: 2.5 },
+};
+
+// ─── Computed: vehicles ───────────────────────────────────────────────────────
+const vehicleList = computed(() =>
+  Object.values(props.vehicles).map(v => {
+    const wx = Number(v.x ?? 0);
+    const wy = Number(v.y ?? 0);
+    const pct = w2pct(wx, wy);
+
+    if (import.meta.env.DEV) {
+      console.debug(
+        `[MAP] ${v.vehicle_id} | backend: x=${v.x} y=${v.y} zone=${v.zone_id}` +
+        ` | world:(${wx},${wy}) | canvas:(${pct.x}%,${pct.y}%)`
+      );
+    }
+
+    return { ...v, wx, wy, pctX: pct.x, pctY: pct.y };
   })
 );
 
-const infraList = computed(() =>
-  INFRA.map(p => ({ ...p, pos: worldToCanvas(p.x, p.y) }))
+// ─── Computed: traffic lights ─────────────────────────────────────────────────
+const lightList = computed(() =>
+  Object.entries(props.trafficLights).map(([id, d]) => {
+    const wpos = TL_POS[id] ?? { wx: 5, wy: 2.5 };
+    const pct  = w2pct(wpos.wx, wpos.wy);
+    return {
+      id,
+      state:   (d.state ?? d.status ?? 'UNKNOWN').toUpperCase(),
+      zone_id: d.zone_id ?? '',
+      pctX:    pct.x,
+      pctY:    pct.y,
+    };
+  })
 );
 
 function lightColor(state) {
   if (state === 'GREEN')  return '#10b981';
   if (state === 'RED')    return '#ef4444';
   if (state === 'YELLOW') return '#f59e0b';
-  return '#6b7280';
+  return '#64748b';
 }
 
-function speedClass(speed) {
-  if (speed === undefined) return '';
-  if (speed < 0.5) return 'stopped';
-  if (speed < 1.5) return 'slow';
-  return 'moving';
+function speedColor(speed) {
+  const s = Number(speed ?? 0);
+  if (s < 0.5) return '#ef4444';
+  if (s < 1.5) return '#f59e0b';
+  return '#10b981';
 }
 </script>
 
@@ -106,97 +187,168 @@ function speedClass(speed) {
     </div>
 
     <div class="canvas">
-      <!-- ── SVG layer: roads + zones ── -->
-      <svg class="roads-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
-        <!--
-          Road coordinate mapping (same formula as worldToCanvas):
-          left% = x/26*100,  top% = (7-y)/7*100
-          Z1 exit: x=3  → 11.5%
-          Z2 start: x=9 → 34.6%
-          Z2 center: x=12 → 46.2%
-          Z2 end: x=15 → 57.7%
-          Z3: x=21 → 80.8%
-          DEPOT y=0 → top=100%  (bottom)
-          PIT-1 y=2 → top=71.4%
-          Crusher y=5 → top=28.6%
-        -->
+      <!--
+        SVG: static map geometry (roads, zones, infra, lights).
+        viewBox="0 0 100 100" — all coords are w2pct() percentages.
+        Vehicle divs are overlaid absolutely using the SAME w2pct() values.
+      -->
+      <svg
+        class="map-svg"
+        viewBox="0 0 100 100"
+        preserveAspectRatio="none"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <!-- ── Layer 1: Zone backgrounds ── -->
+        <rect
+          v-for="z in zoneBands"
+          :key="z.id"
+          :x="z.x1" y="0"
+          :width="z.x2 - z.x1" height="100"
+          :fill="z.color"
+        />
 
-        <!-- Main haul road: PIT zone → CRUSHER (horizontal spine at y≈1.5 → top≈78%) -->
-        <rect x="0" y="74" width="100" height="4" rx="1"
-              fill="rgba(148,163,184,0.10)" />
-        <line x1="0" y1="76" x2="100" y2="76"
-              stroke="rgba(255,255,255,0.07)" stroke-width="0.5" stroke-dasharray="3 2"/>
+        <!-- Zone boundary dividers -->
+        <line
+          v-for="bx in ZONE_DIVIDERS"
+          :key="'div-' + bx"
+          :x1="bx" y1="0" :x2="bx" y2="100"
+          stroke="rgba(255,255,255,0.06)"
+          stroke-width="0.15"
+          stroke-dasharray="1.2 1.2"
+        />
 
-        <!-- Return road (empty trucks back): slightly offset (y≈0.5 → top≈93%) -->
-        <rect x="0" y="89" width="100" height="3" rx="1"
-              fill="rgba(148,163,184,0.07)" />
+        <!-- Zone labels (bottom of canvas, above margin) -->
+        <text
+          v-for="z in zoneBands"
+          :key="'lbl-' + z.id"
+          :x="z.lx" y="97"
+          text-anchor="middle"
+          font-size="2.5"
+          font-family="monospace"
+          font-weight="700"
+          fill="rgba(148,163,184,0.4)"
+        >{{ z.label }}</text>
 
-        <!-- Connector: PIT-1 ramp (x=0→11.5%, y=2→71.4% to haul road y=76%) -->
-        <rect x="0" y="71" width="12" height="5" rx="1"
-              fill="rgba(148,163,184,0.08)" />
+        <!-- ── Layer 2: Road polygon ── -->
+        <polygon
+          :points="ROAD_PTS"
+          fill="rgba(100,116,139,0.15)"
+          stroke="rgba(148,163,184,0.25)"
+          stroke-width="0.2"
+        />
 
-        <!-- Connector: CRUSHER approach (x=81% downward to y=76%) -->
-        <rect x="79" y="29" width="4" height="47" rx="1"
-              fill="rgba(148,163,184,0.08)" />
+        <!-- Lane guides (actual simulator routes, drawn as dashed polylines) -->
+        <polyline
+          v-for="(pts, i) in LANES"
+          :key="'lane-' + i"
+          :points="pts"
+          fill="none"
+          stroke="rgba(255,255,255,0.08)"
+          stroke-width="0.25"
+          stroke-dasharray="1.5 1"
+        />
 
-        <!-- Zone labels -->
-        <text x="3"  y="68" font-size="3.5" fill="rgba(148,163,184,0.5)" font-family="monospace">Z1</text>
-        <text x="38" y="68" font-size="3.5" fill="rgba(148,163,184,0.5)" font-family="monospace">Z2</text>
-        <text x="80" y="68" font-size="3.5" fill="rgba(148,163,184,0.5)" font-family="monospace">Z3</text>
+        <!-- ── Layer 3: Infrastructure nodes ── -->
+        <g v-for="n in infraComputed" :key="n.id">
+          <circle
+            :cx="n.p.x" :cy="n.p.y" r="2.2"
+            :fill="n.color + '18'"
+            :stroke="n.color + '70'"
+            stroke-width="0.3"
+          />
+          <text
+            :x="n.p.x" :y="n.p.y + 1"
+            text-anchor="middle"
+            font-size="2.8"
+          >{{ n.icon }}</text>
+          <text
+            :x="n.p.x" :y="n.p.y + 4"
+            text-anchor="middle"
+            font-size="1.8"
+            font-family="monospace"
+            font-weight="700"
+            :fill="n.color"
+          >{{ n.label }}</text>
+        </g>
 
-        <!-- Zone boundary separators (dashed vertical) -->
-        <line x1="34" y1="0" x2="34" y2="100"
-              stroke="rgba(255,255,255,0.04)" stroke-width="0.5" stroke-dasharray="2 4"/>
-        <line x1="65" y1="0" x2="65" y2="100"
-              stroke="rgba(255,255,255,0.04)" stroke-width="0.5" stroke-dasharray="2 4"/>
+        <!-- ── Layer 4: Traffic lights ── -->
+        <g v-for="light in lightList" :key="light.id">
+          <!-- Post -->
+          <line
+            :x1="light.pctX" :y1="light.pctY + 3.5"
+            :x2="light.pctX" :y2="light.pctY + 1.2"
+            stroke="rgba(200,200,200,0.35)"
+            stroke-width="0.3"
+          />
+          <!-- Housing -->
+          <rect
+            :x="light.pctX - 1.4" :y="light.pctY - 1.4"
+            width="2.8" height="2.8"
+            rx="0.6"
+            fill="rgba(10,15,30,0.92)"
+            stroke="rgba(255,255,255,0.3)"
+            stroke-width="0.2"
+          />
+          <!-- Bulb -->
+          <circle
+            :cx="light.pctX" :cy="light.pctY" r="0.9"
+            :fill="lightColor(light.state)"
+          />
+          <!-- ID text -->
+          <text
+            :x="light.pctX" :y="light.pctY + 5.5"
+            text-anchor="middle"
+            font-size="1.6"
+            font-family="monospace"
+            fill="rgba(255,255,255,0.7)"
+          >{{ light.id }}</text>
+          <!-- State text -->
+          <text
+            :x="light.pctX" :y="light.pctY + 7.5"
+            text-anchor="middle"
+            font-size="1.5"
+            font-family="monospace"
+            :fill="lightColor(light.state)"
+          >{{ light.state }}</text>
+        </g>
+
+        <!-- Empty state -->
+        <g v-if="vehicleList.length === 0 && lightList.length === 0">
+          <text
+            x="50" y="46"
+            text-anchor="middle"
+            font-size="3.5"
+            fill="rgba(100,116,139,0.6)"
+          >Waiting for gateway data…</text>
+          <text
+            x="50" y="52"
+            text-anchor="middle"
+            font-size="2.2"
+            fill="rgba(100,116,139,0.35)"
+          >Backend must be running on port 8000</text>
+        </g>
       </svg>
 
-      <!-- ── Infrastructure pins ── -->
-      <div
-        v-for="p in infraList"
-        :key="p.id"
-        class="infra-pin"
-        :style="{ left: p.pos.left, top: p.pos.top }"
-        :title="p.label"
-      >
-        <span class="infra-icon" :style="{ background: p.color + '22', borderColor: p.color + '55' }">
-          {{ p.icon }}
-        </span>
-        <span class="infra-label" :style="{ color: p.color }">{{ p.label }}</span>
-      </div>
-
-      <!-- ── Traffic lights ── -->
-      <div
-        v-for="light in lightList"
-        :key="light.id"
-        class="tl-pin"
-        :style="{ left: light.pos.left, top: light.pos.top }"
-        :title="`${light.id} — ${light.state} (${light.zone_id})`"
-      >
-        <div class="tl-body">
-          <div class="tl-bulb" :style="{ background: lightColor(light.state), boxShadow: `0 0 8px ${lightColor(light.state)}` }"></div>
-        </div>
-        <span class="tl-label">{{ light.id }}</span>
-      </div>
-
-      <!-- ── Vehicles ── -->
+      <!--
+        Vehicles: HTML divs overlaid on SVG.
+        Positioned using the SAME w2pct() percentages → guaranteed alignment.
+        CSS transition: left/top for smooth movement between updates.
+      -->
       <div
         v-for="v in vehicleList"
         :key="v.vehicle_id"
-        class="vehicle-pin"
-        :class="speedClass(v.speed)"
-        :style="{ left: v.pos.left, top: v.pos.top }"
-        :title="`${v.vehicle_id} — Zone ${v.zone_id} | ${v.speed} km/h → ${v.destination}`"
+        class="vehicle"
+        :style="{
+          left: v.pctX + '%',
+          top:  v.pctY + '%',
+          '--speed-color': speedColor(v.speed),
+        }"
+        :title="`${v.vehicle_id} | Zone ${v.zone_id} | (${v.wx}, ${v.wy}) | ${v.speed} km/h → ${v.destination}`"
       >
-        <div class="vehicle-icon">🚜</div>
-        <span class="vehicle-label">{{ v.vehicle_id }}</span>
-        <span class="vehicle-speed" v-if="v.speed !== undefined">{{ v.speed }} km/h</span>
-      </div>
-
-      <!-- Empty state -->
-      <div v-if="vehicleList.length === 0 && lightList.length === 0" class="map-empty">
-        <p>Waiting for gateway data…</p>
-        <p class="sub">Make sure the backend is running on port 8000</p>
+        <div class="v-ring"></div>
+        <div class="v-icon">🚜</div>
+        <span class="v-label">{{ v.vehicle_id }}</span>
+        <span class="v-speed">{{ Number(v.speed).toFixed(1) }} km/h</span>
       </div>
     </div>
   </div>
@@ -215,7 +367,7 @@ function speedClass(speed) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 0.75rem;
+  margin-bottom: 0.6rem;
   flex-shrink: 0;
 }
 .map-header h2 {
@@ -240,97 +392,30 @@ function speedClass(speed) {
   flex-shrink: 0;
 }
 
-/* Map canvas */
+/* ── Canvas: relative container for SVG + vehicle overlay ── */
 .canvas {
   flex: 1;
   position: relative;
+  min-height: 0;
   border-radius: 8px;
   overflow: hidden;
   background:
-    radial-gradient(ellipse at 80% 30%, rgba(167,139,250,0.06) 0%, transparent 50%),
-    radial-gradient(ellipse at 5%  80%, rgba(245,158,11,0.06)  0%, transparent 40%),
-    rgba(0,0,0,0.35);
+    radial-gradient(ellipse at 88% 18%, rgba(167,139,250,0.07) 0%, transparent 45%),
+    radial-gradient(ellipse at  5% 82%, rgba(245,158,11,0.07)  0%, transparent 40%),
+    rgba(0, 0, 0, 0.32);
   border: 1px solid rgba(255,255,255,0.06);
-  min-height: 200px;
 }
 
-.roads-svg {
+/* SVG fills the container exactly — preserveAspectRatio="none" stretches it */
+.map-svg {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
-  pointer-events: none;
 }
 
-/* Infrastructure */
-.infra-pin {
-  position: absolute;
-  transform: translate(-50%, -50%);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  z-index: 5;
-  pointer-events: none;
-}
-.infra-icon {
-  font-size: 1rem;
-  width: 28px;
-  height: 28px;
-  border-radius: 6px;
-  border: 1px solid;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.infra-label {
-  font-size: 0.45rem;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  white-space: nowrap;
-  background: rgba(0,0,0,0.6);
-  padding: 1px 3px;
-  border-radius: 3px;
-}
-
-/* Traffic lights */
-.tl-pin {
-  position: absolute;
-  transform: translate(-50%, -50%);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  z-index: 15;
-  cursor: default;
-}
-.tl-body {
-  width: 14px;
-  height: 14px;
-  background: rgba(20,20,30,0.9);
-  border: 1px solid rgba(255,255,255,0.2);
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.tl-bulb {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  transition: background 0.4s, box-shadow 0.4s;
-}
-.tl-label {
-  font-size: 0.45rem;
-  color: rgba(255,255,255,0.7);
-  background: rgba(0,0,0,0.65);
-  padding: 1px 3px;
-  border-radius: 3px;
-  white-space: nowrap;
-}
-
-/* Vehicles */
-.vehicle-pin {
+/* ── Vehicles: absolutely positioned over SVG ── */
+.vehicle {
   position: absolute;
   transform: translate(-50%, -50%);
   display: flex;
@@ -338,46 +423,50 @@ function speedClass(speed) {
   align-items: center;
   gap: 1px;
   z-index: 20;
-  transition: left 0.7s ease, top 0.7s ease;
-  cursor: default;
+  pointer-events: none;
+  /* Smooth position interpolation — matches the 1s backend update cycle */
+  transition: left 0.75s ease, top 0.75s ease;
 }
-.vehicle-icon {
-  font-size: 1.1rem;
-  filter: drop-shadow(0 1px 4px rgba(0,0,0,0.7));
+
+/* Speed-colored glow ring */
+.v-ring {
+  position: absolute;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 2px solid var(--speed-color, #10b981);
+  box-shadow: 0 0 8px var(--speed-color, #10b981);
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  opacity: 0.7;
+  transition: border-color 0.4s, box-shadow 0.4s;
 }
-.vehicle-label {
-  font-size: 0.45rem;
+
+.v-icon {
+  font-size: 1rem;
+  line-height: 1;
+  filter: drop-shadow(0 1px 3px rgba(0,0,0,0.8));
+}
+
+.v-label {
+  font-size: 0.42rem;
   font-weight: 700;
   color: #fff;
-  background: rgba(59,130,246,0.8);
+  background: rgba(37, 99, 235, 0.85);
   padding: 1px 4px;
   border-radius: 3px;
   white-space: nowrap;
+  font-family: monospace;
 }
-.vehicle-speed {
-  font-size: 0.4rem;
-  color: rgba(255,255,255,0.7);
-  background: rgba(0,0,0,0.5);
+
+.v-speed {
+  font-size: 0.38rem;
+  color: rgba(255,255,255,0.65);
+  background: rgba(0,0,0,0.55);
   padding: 0 3px;
   border-radius: 2px;
   white-space: nowrap;
+  font-family: monospace;
 }
-
-/* Speed-based glow ring */
-.vehicle-pin.moving .vehicle-icon   { filter: drop-shadow(0 0 5px #10b981) drop-shadow(0 1px 4px rgba(0,0,0,0.7)); }
-.vehicle-pin.slow   .vehicle-icon   { filter: drop-shadow(0 0 5px #f59e0b) drop-shadow(0 1px 4px rgba(0,0,0,0.7)); }
-.vehicle-pin.stopped .vehicle-icon  { filter: drop-shadow(0 0 5px #ef4444) drop-shadow(0 1px 4px rgba(0,0,0,0.7)); }
-
-.map-empty {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 0.4rem;
-  color: var(--text-muted);
-  font-size: 0.85rem;
-}
-.map-empty .sub { font-size: 0.7rem; opacity: 0.6; }
 </style>
